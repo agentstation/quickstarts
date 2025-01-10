@@ -1,0 +1,13 @@
+{
+  "name": "playwright-javascript",
+  "version": "1.0.0",
+  "description": "A Playwright JavaScript project to automate Google search for AgentStation.ai and navigate through the website",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.7",
+    "playwright": "^1.41.1"
+  }
+} 
