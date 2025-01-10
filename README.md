@@ -38,7 +38,7 @@ Each quickstart project comes with its own README and setup instructions. Genera
 To deepen your understanding of working with Virtual Workstations and the AgentStation API, check out these resources:
 
 - [AgentStation API Documentation](https://docs.agentstation.ai)
-- [AgentStation Cookbook](https://github.com/agentstation/cookbook) - A collection of code snippets and guides for common tasks
+- <!-- [AgentStation Cookbook](https://github.com/agentstation/cookbook) - A collection of code snippets and guides for common tasks -->
 
 ## Contributing
 
