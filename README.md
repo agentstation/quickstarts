@@ -1,6 +1,6 @@
 # AgentStation Quickstarts
 
-AgentStation Quickstarts is a collection of projects designed to help developers quickly get started with building applications using the AgentStation API. Each quickstart provides a foundation that you can easily build upon and customize for your specific needs.
+AgentStation Quickstarts is a collection of projects designed to help developers quickly get started with building agentic applications using the AgentStation API. Each quickstart provides a foundation that you can easily build upon and customize for your specific needs.
 
 ## Getting Started
 
