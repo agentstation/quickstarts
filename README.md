@@ -12,7 +12,8 @@ To use these quickstarts, you'll need an AgentStation API key. If you don't have
 
 A Puppeteer application that demonstrates how to leverage the AgentStation API to create a Virtual Workstation and control a desktop browser in a computer environment.
 
-[Go to Puppeteer Quickstart](./puppeteer)
+- [JavaScript Puppeteer Quickstart](./puppeteer/javascript)
+- [TypeScript Puppeteer Quickstart](./puppeteer/typescript)
 
 ### Playwright Application
 
