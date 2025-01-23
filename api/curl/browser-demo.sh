@@ -47,9 +47,9 @@ echo "🔗 Visit https://app.agentstation.ai/workstations to see it."
 sleep 2
 
 echo "Starting recorder..."
-curl -s -X POST "$API_BASE_URL/workstations/$WORKSTATION_ID/recorder/start" \
+RECORD_RESPONSE=$(curl -s -X POST "$API_BASE_URL/workstations/$WORKSTATION_ID/recorder/start" \
   -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json"
+  -H "Content-Type: application/json")
 
 
 echo "🕒 Waiting for 10 seconds while workstation finishes setting up..."
@@ -144,3 +144,7 @@ CLICK_RESPONSE=$(curl -s -X POST "$API_BASE_URL/workstations/$WORKSTATION_ID/bro
   }')
 
 echo "🚀 Clicked the 'Launch' button... go rocket go!"
+
+sleep 10
+
+echo "✨ Demo run completed successfully!"
