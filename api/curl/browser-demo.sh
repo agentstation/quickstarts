@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # --- Configuration ---
-API_BASE_URL="https://stage.api.agentstation.dev/v1"
+API_BASE_URL="https://api.agentstation.ai/v1"
 API_KEY="${AGENTSTATION_API_KEY}"
 WORKSTATION_NAME="demo-workstation"
 WORKSTATION_TYPE="default"
