@@ -8,7 +8,7 @@ const CONFIG = {
   TIMEOUTS: {
     PAGE_LOAD: 120000,
     NAVIGATION: 60000,
-    TYPE_DELAY: 60,
+    TYPE_DELAY: 20,
     PAGE_PAUSE: 2000,
     LONG_PAUSE: 5000,
     WORKSTATION_SETUP: 10000
@@ -38,7 +38,7 @@ class WorkstationManager {
     console.log('🔌 Getting browser WebSocket URL...');
     try {
       const response = await axios.post(
-        `${CONFIG.API_BASE_URL}/workstations/${this.workstation.id}/browser/connect`,
+        `${CONFIG.API_BASE_URL}/workstations/${this.workstation.id}/browser/cdp`,
         {},
         { headers: this.getHeaders() }
       );
@@ -59,7 +59,7 @@ class WorkstationManager {
     }, CONFIG.TIMEOUTS.LONG_PAUSE);
     
     try {
-      if (this.browser) {
+      if (this.browser && this.browser.connected) {
         try {
           console.log('🔒 Closing browser...');
           await this.browser.close();
@@ -230,6 +230,12 @@ async function runDemo() {
 
       if (answer.toLowerCase() !== 'y') {
         console.log('👋 Thanks for trying the demo!');
+        if (workstationManager && workstationManager.browser) {
+          console.log('🔒 Closing browser connection...');
+          await workstationManager.browser.disconnect();
+          console.log('⏳ Waiting 10 seconds before cleanup...');
+          await new Promise(resolve => setTimeout(resolve, 10000));
+        }
         break;
       }
       console.log('\n🔄 Starting another demo run...\n');

@@ -46,7 +46,7 @@ class WorkstationManager:
         print('🔌 Getting browser WebSocket URL...')
         try:
             response = requests.post(
-                f"{CONFIG['API_BASE_URL']}/workstations/{self.workstation['id']}/browser/connect",
+                f"{CONFIG['API_BASE_URL']}/workstations/{self.workstation['id']}/browser/cdp",
                 json={},
                 headers=self.get_headers()
             )

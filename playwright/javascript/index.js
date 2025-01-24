@@ -39,7 +39,7 @@ class WorkstationManager {
     console.log('🔌 Getting browser WebSocket URL...');
     try {
       const response = await axios.post(
-        `${CONFIG.API_BASE_URL}/workstations/${this.workstation.id}/browser/connect`,
+        `${CONFIG.API_BASE_URL}/workstations/${this.workstation.id}/browser/cdp`,
         {},
         { headers: this.getHeaders() }
       );
