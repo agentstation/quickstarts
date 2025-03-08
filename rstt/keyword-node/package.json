@@ -1,0 +1,14 @@
+{
+  "name": "keyword-node",
+  "version": "1.0.0",
+  "description": "An example of real-time text-to-speech keyword matching in node.js",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.7",
+    "eventsource": "^3.0.5"
+  }
+}
