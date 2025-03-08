@@ -1,13 +1,16 @@
 import { EventSource } from "eventsource";
 
 // Read API key and workstation ID from environment variables
-const AGENTSTATION_API_KEY = process.env.AGENTSTATION_API_KEY_STAGE;
+const AGENTSTATION_API_KEY = process.env.AGENTSTATION_API_KEY;
 const WORKSTATION_ID = process.env.WORKSTATION_ID;
 
 // Set configurable constants with environment variable fallbacks
 const SSE_TIMEOUT_MS = parseInt(process.env.SSE_TIMEOUT_MS || "210000", 10); // 3.5 minutes
 const KEYWORD = process.env.KEYWORD || "robot";
 const RESTART_DELAY_MS = parseInt(process.env.RESTART_DELAY_MS || "1000", 10);
+
+// Add a flag to track the first connection at the module level
+let isFirstConnection = true;
 
 // Validate required AGENTSTATION_API_KEY environment variable
 if (!AGENTSTATION_API_KEY) {
@@ -72,10 +75,11 @@ function listenForKeyword(workstationId, reconnectAttempt = 0) {
 
   // Debug when connection opens
   eventSource.onopen = () => {
-    // Only log connection messages on the first connection (not on reconnects)
-    if (reconnectAttempt === 0) {
+    // Only log connection messages on the very first connection
+    if (isFirstConnection) {
       console.log("🔗 Connection to SSE stream has been opened successfully");
       console.log(`🎤 Listening for keyword: "${KEYWORD}"`);
+      isFirstConnection = false;
     }
   };
 
