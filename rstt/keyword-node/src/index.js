@@ -1,6 +1,7 @@
 import { EventSource } from "eventsource";
-import net from "net";
 import https from "https";
+import http from "http";
+import net from "net";
 import tls from "tls";
 
 // Read API key and workstation ID from environment variables
@@ -12,11 +13,17 @@ const SSE_TIMEOUT_MS = parseInt(process.env.SSE_TIMEOUT_MS || "210000", 10); // 
 const KEYWORD = process.env.KEYWORD || "robot";
 const RESTART_DELAY_MS = parseInt(process.env.RESTART_DELAY_MS || "1000", 10);
 
+// Enable verbose logging by default for debugging
+if (!process.env.VERBOSE_LOGGING) {
+  process.env.VERBOSE_LOGGING = "true";
+}
+
 // Add a flag to track the first connection at the module level
 let isFirstConnection = true;
 
 // Track if we're currently speaking
 let isSpeaking = false;
+let activeSpeechSocket = null; // Track the active socket used for speech requests
 
 // Add the long text as a constant at the module level for easy access
 const LONG_TEXT =
@@ -42,312 +49,280 @@ console.log(
     : "undefined"
 );
 
-/**
- * RST Interrupt Utility - A collection of methods for sending RST packets to interrupt TCP connections
- */
-class RSTInterruptUtility {
-  /**
-   * Create a new socket and send an RST packet to the specified host and port
-   * @param {Object} options Configuration options
-   * @param {string} options.host Target host
-   * @param {number} options.port Target port
-   * @param {string} options.path Request path
-   * @param {Object} options.headers HTTP headers to include
-   * @param {string} options.method HTTP method
-   * @param {string} options.body Request body
-   * @param {boolean} options.useTLS Whether to use TLS/SSL
-   * @param {Function} options.onSuccess Callback when RST is sent successfully
-   * @param {Function} options.onError Callback when an error occurs
-   * @returns {boolean} Whether the interrupt was initiated
-   */
-  static sendRSTPacket({
-    host = "api.agentstation.ai",
-    port = 443,
-    path = "/",
-    headers = {},
-    method = "POST",
-    body = "{}",
-    useTLS = true,
-    onSuccess = null,
-    onError = null,
-  } = {}) {
-    // Simplified logging - just a single log when starting
-    const isVerboseLogging = process.env.VERBOSE_LOGGING === "true";
-
-    try {
-      // Create a new TCP socket for each request (no reuse)
-      const socket = new net.Socket();
-
-      // Set up error handling
-      socket.on("error", (err) => {
-        if (isVerboseLogging) {
-          console.log(`RST socket error (expected): ${err.message}`);
-        }
-        if (onError) onError(err);
-      });
-
-      // Connect to the server
-      socket.connect(port, host, () => {
-        if (isVerboseLogging) {
-          console.log(`RST interrupt: Connected to ${host}:${port}`);
-        }
-
-        // If TLS is requested, upgrade the connection
-        if (useTLS) {
-          const tlsOptions = {
-            socket: socket,
-            servername: host,
-            rejectUnauthorized: true,
-          };
-
-          const tlsSocket = tls.connect(tlsOptions, () => {
-            if (isVerboseLogging) {
-              console.log(
-                "RST interrupt: TLS connection established, sending request..."
-              );
-            }
-
-            // Prepare headers
-            const headerLines = Object.entries(headers)
-              .map(([key, value]) => `${key}: ${value}`)
-              .join("\r\n");
-
-            // Format the request
-            const request =
-              `${method} ${path} HTTP/1.1\r\n` +
-              `Host: ${host}\r\n` +
-              headerLines +
-              (headerLines ? "\r\n" : "") +
-              `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n` +
-              body;
-
-            tlsSocket.write(request, () => {
-              if (isVerboseLogging) {
-                console.log(
-                  "RST interrupt: Request sent, executing resetAndDestroy..."
-                );
-              }
-
-              // Increase the delay to ensure the request is fully processed
-              setTimeout(() => {
-                try {
-                  // Always use resetAndDestroy on the raw TCP socket
-                  if (typeof socket.resetAndDestroy === "function") {
-                    // Only log in verbose mode
-                    if (isVerboseLogging) {
-                      console.log("Executing resetAndDestroy() on socket");
-                    }
-
-                    // Try to force socket to flush data before destroying
-                    socket.setNoDelay(true);
-
-                    // Call resetAndDestroy and capture result
-                    const result = socket.resetAndDestroy();
-
-                    if (isVerboseLogging) {
-                      console.log(
-                        `resetAndDestroy() called, result: ${
-                          result !== undefined ? result : "undefined"
-                        }`
-                      );
-                    }
-
-                    if (onSuccess) onSuccess();
-                  } else {
-                    if (isVerboseLogging) {
-                      console.log(
-                        "RST interrupt: resetAndDestroy() not available, using alternative..."
-                      );
-                    }
-                    socket.destroy(new Error("Force close"));
-                    if (onSuccess) onSuccess();
-                  }
-                } catch (err) {
-                  console.error(`RST interrupt failed: ${err.message}`);
-                  if (onError) onError(err);
-                }
-              }, 100); // Increased to 100ms from 10ms to ensure request is fully sent
-            });
-          });
-
-          tlsSocket.on("error", (err) => {
-            if (isVerboseLogging) {
-              console.log(
-                `TLS socket error (expected after RST): ${err.message}`
-              );
-            }
-          });
-        }
-        // For non-TLS connections, send the request directly
-        else {
-          // Prepare headers
-          const headerLines = Object.entries(headers)
-            .map(([key, value]) => `${key}: ${value}`)
-            .join("\r\n");
-
-          // Format the request
-          const request =
-            `${method} ${path} HTTP/1.1\r\n` +
-            `Host: ${host}\r\n` +
-            headerLines +
-            (headerLines ? "\r\n" : "") +
-            `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n` +
-            body;
-
-          socket.write(request, () => {
-            if (isVerboseLogging) {
-              console.log(
-                "RST interrupt: Request sent, executing resetAndDestroy..."
-              );
-            }
-
-            // Increased delay for non-TLS case as well
-            setTimeout(() => {
-              try {
-                if (typeof socket.resetAndDestroy === "function") {
-                  // Only log in verbose mode
-                  if (isVerboseLogging) {
-                    console.log("Executing resetAndDestroy() on socket");
-                  }
-
-                  // Try to force socket to flush data before destroying
-                  socket.setNoDelay(true);
-
-                  // Call resetAndDestroy and capture result
-                  const result = socket.resetAndDestroy();
-
-                  if (isVerboseLogging) {
-                    console.log(
-                      `resetAndDestroy() called, result: ${
-                        result !== undefined ? result : "undefined"
-                      }`
-                    );
-                  }
-
-                  if (onSuccess) onSuccess();
-                } else {
-                  if (isVerboseLogging) {
-                    console.log(
-                      "RST interrupt: resetAndDestroy() not available, using alternative..."
-                    );
-                  }
-                  socket.destroy(new Error("Force close"));
-                  if (onSuccess) onSuccess();
-                }
-              } catch (err) {
-                console.error(`RST interrupt failed: ${err.message}`);
-                if (onError) onError(err);
-              }
-            }, 100); // Increased to 100ms from 10ms to ensure request is fully sent
-          });
-        }
-      });
-
-      return true;
-    } catch (error) {
-      console.error(`Error initiating RST interrupt: ${error.message}`);
-      if (onError) onError(error);
-      return false;
-    }
-  }
-
-  /**
-   * Interrupt a speech stream on the Agent Station API
-   * @param {string} workstationId The workstation ID
-   * @param {string} apiKey The API key for authentication
-   * @returns {boolean} Whether the interruption was initiated
-   */
-  static interruptSpeech(workstationId, apiKey) {
-    // Make fewer attempts but with better timing
-    const attemptCount = 2; // Reduce to 2 attempts to minimize noise
-    let success = false;
-    const isVerboseLogging = process.env.VERBOSE_LOGGING === "true";
-
-    // Send first RST packet immediately
-    success = this.sendRSTPacket({
-      host: "api.agentstation.ai",
-      port: 443,
-      path: `/v1/workstations/${workstationId}/audio/speak`,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        Connection: "close", // Add connection close header
-      },
-      method: "POST",
-      body: '{"text":"interrupt"}',
-      useTLS: true,
-      onSuccess: () => {
-        console.log("🤖 Speech interrupted successfully via RST");
-        // Reset state after successful interrupt
-        isSpeaking = false;
-      },
-      onError: (err) => {
-        console.error("🤖 RST interrupt failed, but continuing: ", err.message);
-        // Reset state even after failure to allow retrying
-        isSpeaking = false;
-      },
-    });
-
-    // Send additional attempt with longer delay
-    if (attemptCount > 1) {
-      setTimeout(() => {
-        if (isVerboseLogging) {
-          console.log("Sending backup RST packet...");
-        }
-
-        this.sendRSTPacket({
-          host: "api.agentstation.ai",
-          port: 443,
-          path: `/v1/workstations/${workstationId}/audio/speak`,
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            Connection: "close", // Add connection close header
-          },
-          method: "POST",
-          body: '{"text":"interrupt"}',
-          useTLS: true,
-          // Don't log success for backup attempts to avoid confusion
-          onSuccess: () => {
-            if (isVerboseLogging) {
-              console.log("Backup RST packet sent successfully");
-            }
-            isSpeaking = false;
-          },
-          onError: (err) => {
-            if (isVerboseLogging) {
-              console.log("Backup RST packet failed: " + err.message);
-            }
-            isSpeaking = false;
-          },
-        });
-      }, 200); // Increased delay to 200ms for better separation
-    }
-
-    return success;
-  }
-}
-
 // Function to interrupt the current speech
 function interruptSpeech() {
-  // Reset the speaking state immediately to allow for multiple interrupts
   const wasSpeaking = isSpeaking;
   isSpeaking = false;
 
   if (wasSpeaking) {
     console.log("🤖 Interrupting speech with RST...");
 
-    // We don't need to store the return value anymore since we already reset the state
-    RSTInterruptUtility.interruptSpeech(WORKSTATION_ID, AGENTSTATION_API_KEY);
+    // Use the actual speech socket if available
+    if (activeSpeechSocket) {
+      try {
+        console.log("🤖 Sending RST to active speech connection");
 
-    return true;
+        // Enable verbose logging for debugging
+        const isVerboseLogging = process.env.VERBOSE_LOGGING === "true";
+
+        if (isVerboseLogging) {
+          console.log(`Socket type: ${activeSpeechSocket.constructor.name}`);
+          console.log(
+            `Socket has resetAndDestroy: ${
+              typeof activeSpeechSocket.resetAndDestroy === "function"
+                ? "yes"
+                : "no"
+            }`
+          );
+        }
+
+        // Since we're using a direct net.Socket now, we can call resetAndDestroy directly
+        if (typeof activeSpeechSocket.resetAndDestroy === "function") {
+          // Try to set NoDelay to ensure immediate transmission
+          activeSpeechSocket.setNoDelay(true);
+
+          // Send RST packet
+          const result = activeSpeechSocket.resetAndDestroy();
+          console.log(
+            `🤖 resetAndDestroy() called with result: ${
+              result !== undefined ? result : "undefined"
+            }`
+          );
+
+          // Keep a reference to the socket
+          const socketToDestroy = activeSpeechSocket;
+
+          // Clear the reference so new requests can be made immediately
+          activeSpeechSocket = null;
+
+          // Wait a moment to ensure the RST has time to be sent before we completely discard the socket
+          console.log("🤖 Waiting briefly for RST packet to be sent...");
+          setTimeout(() => {
+            console.log("🤖 RST packet should have been transmitted by now");
+            // Extra sanity check - fully discard the socket if needed
+            if (socketToDestroy && !socketToDestroy.destroyed) {
+              console.log("🤖 Ensuring socket is fully destroyed");
+              try {
+                socketToDestroy.destroy();
+              } catch (e) {
+                // Ignore any errors during final cleanup
+              }
+            }
+          }, 100); // 100ms pause
+
+          console.log("🤖 Speech interrupt initiated successfully");
+          return true;
+        } else {
+          console.log(
+            "🤖 resetAndDestroy not available, using regular destroy"
+          );
+          activeSpeechSocket.destroy();
+          console.log("🤖 Speech interrupted via socket destroy");
+          activeSpeechSocket = null;
+          return true;
+        }
+      } catch (error) {
+        console.error("🤖 Error interrupting speech:", error.message);
+        // If anything goes wrong, still clear the socket reference
+        activeSpeechSocket = null;
+        return false;
+      }
+    } else {
+      console.log("🤖 No active socket found");
+      return false;
+    }
   }
 
   return false;
 }
 
+// Function to make a direct TCP request with full control over the socket for RST interruption
+function makeTCPRequest(options) {
+  const {
+    hostname,
+    port = 443,
+    path,
+    method = "POST",
+    headers = {},
+    body = null,
+    useTLS = true,
+    onInterrupt = null,
+  } = options;
+
+  return new Promise((resolve, reject) => {
+    // Create a raw TCP socket
+    const socket = new net.Socket();
+    let responseData = "";
+    let responseHeaders = {};
+    let statusCode = null;
+    let handleDataAsResponse = false;
+    let tlsSocket = null;
+
+    // Store this socket for interruption
+    activeSpeechSocket = socket;
+
+    const formatHeaders = () => {
+      // Format the headers for the HTTP request
+      let formattedHeaders = `${method} ${path} HTTP/1.1\r\n`;
+      formattedHeaders += `Host: ${hostname}\r\n`;
+
+      // Add the other headers
+      for (const [key, value] of Object.entries(headers)) {
+        formattedHeaders += `${key}: ${value}\r\n`;
+      }
+
+      // Add Content-Length if we have a body
+      const bodyContent = body
+        ? typeof body === "string"
+          ? body
+          : JSON.stringify(body)
+        : "";
+      const contentLength = Buffer.byteLength(bodyContent);
+      formattedHeaders += `Content-Length: ${contentLength}\r\n`;
+
+      // End headers
+      formattedHeaders += "\r\n";
+
+      // Add body if present
+      if (bodyContent) {
+        formattedHeaders += bodyContent;
+      }
+
+      return formattedHeaders;
+    };
+
+    const parseResponse = (data) => {
+      if (!handleDataAsResponse) {
+        // First chunk - extract status code and headers
+        const responseText = data.toString();
+        const lines = responseText.split("\r\n");
+
+        // Extract status from first line "HTTP/1.1 200 OK"
+        const statusLine = lines[0];
+        const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)\s+.*/);
+        if (statusMatch) {
+          statusCode = parseInt(statusMatch[1], 10);
+        }
+
+        // Extract headers
+        let headerSection = true;
+        let bodyStartIndex = 0;
+
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i];
+
+          if (line === "") {
+            headerSection = false;
+            bodyStartIndex = i + 1;
+            break;
+          }
+
+          if (headerSection) {
+            const [key, ...valueParts] = line.split(":");
+            const value = valueParts.join(":").trim();
+            responseHeaders[key.toLowerCase()] = value;
+          }
+        }
+
+        // Collect response body from remaining lines
+        if (!headerSection && bodyStartIndex < lines.length) {
+          responseData = lines.slice(bodyStartIndex).join("\r\n");
+        }
+
+        handleDataAsResponse = true;
+      } else {
+        // Subsequent chunks - just append to the body
+        responseData += data.toString();
+      }
+    };
+
+    socket.on("error", (err) => {
+      console.log(`TCP socket error: ${err.code} - ${err.message}`);
+      // Handle error, but if it's ECONNRESET and we have interruption enabled, don't treat as error
+      if (err.code === "ECONNRESET" && onInterrupt) {
+        console.log(
+          "Detected TCP connection reset - this is expected during interruption"
+        );
+        onInterrupt();
+        resolve({ interrupted: true });
+      } else {
+        reject(err);
+      }
+    });
+
+    // For secure connections (HTTPS)
+    if (useTLS) {
+      socket.connect(port, hostname, () => {
+        console.log(
+          `TCP socket connected to ${hostname}:${port}, upgrading to TLS`
+        );
+
+        // Once connected, upgrade to TLS
+        tlsSocket = tls.connect({
+          socket: socket,
+          servername: hostname,
+          rejectUnauthorized: true,
+        });
+
+        // Important: after TLS upgrade, we need to track the TLS socket too
+        // This ensures we have access to the underlying socket for proper interruption
+        tlsSocket._tcpSocket = socket;
+
+        // Store both sockets for interruption - the raw one has resetAndDestroy
+        activeSpeechSocket = socket;
+
+        // Now work with the TLS socket
+        tlsSocket.on("error", (err) => {
+          console.log(`TLS socket error: ${err.message}`);
+          if (err.code === "ECONNRESET" && onInterrupt) {
+            onInterrupt();
+            resolve({ interrupted: true });
+          } else {
+            reject(err);
+          }
+        });
+
+        tlsSocket.on("data", (data) => {
+          parseResponse(data);
+        });
+
+        tlsSocket.on("end", () => {
+          console.log("TLS connection ended normally");
+          resolve({
+            statusCode,
+            headers: responseHeaders,
+            data: responseData,
+          });
+        });
+
+        // Send the HTTP request
+        tlsSocket.write(formatHeaders());
+      });
+    }
+    // For regular HTTP
+    else {
+      socket.connect(port, hostname, () => {
+        socket.on("data", (data) => {
+          parseResponse(data);
+        });
+
+        socket.on("end", () => {
+          resolve({
+            statusCode,
+            headers: responseHeaders,
+            data: responseData,
+          });
+        });
+
+        // Send the HTTP request
+        socket.write(formatHeaders());
+      });
+    }
+  });
+}
+
 /**
- * Makes an HTTP request with the option to interrupt it with RST packets
+ * Makes an HTTP request with the option to interrupt it with RST packets (legacy version)
  * @param {Object} options Request options
  * @param {boolean} options.enableRSTInterruption Whether this request can be interrupted with RST
  * @returns {Promise} A promise that resolves with the response
@@ -365,8 +340,23 @@ function makeInterruptibleRequest(options) {
     onInterrupt = null,
   } = options;
 
+  // If we're asking for RST interruption, use the direct TCP method
+  if (enableRSTInterruption) {
+    return makeTCPRequest({
+      hostname,
+      port,
+      path,
+      method,
+      headers,
+      body,
+      useTLS: protocol === "https:",
+      onInterrupt,
+    });
+  }
+
+  // Otherwise use the standard HTTP/HTTPS module
   return new Promise((resolve, reject) => {
-    const requestModule = protocol === "https:" ? https : require("http");
+    const requestModule = protocol === "https:" ? https : http;
 
     const requestOptions = {
       hostname,
@@ -393,17 +383,7 @@ function makeInterruptibleRequest(options) {
     });
 
     req.on("error", (error) => {
-      // Don't treat ECONNRESET as an error if we're enabling RST interruption
-      if (
-        enableRSTInterruption &&
-        (error.code === "ECONNRESET" ||
-          error.message.includes("Socket forcibly closed"))
-      ) {
-        if (onInterrupt) onInterrupt();
-        resolve({ interrupted: true });
-      } else {
-        reject(error);
-      }
+      reject(error);
     });
 
     // Send the body if provided
@@ -457,13 +437,17 @@ async function speakText(text, workstationId, languageCode = "en-US") {
       console.log("🤖 🔊 Speech completed");
     }
 
-    // Ensure state is reset
+    // Ensure we reset the isSpeaking state
     isSpeaking = false;
+    // Clear the socket reference since we're done with it
+    activeSpeechSocket = null;
     return response;
   } catch (error) {
-    console.error("Error in speech request:", error.message);
-    // Ensure state is reset even in case of errors
+    console.error("Error in speakText:", error);
+    // Ensure we reset the state even on error
     isSpeaking = false;
+    // Clear the socket reference on error too
+    activeSpeechSocket = null;
     throw error;
   }
 }
