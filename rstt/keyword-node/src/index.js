@@ -1,4 +1,7 @@
 import { EventSource } from "eventsource";
+import net from "net";
+import https from "https";
+import tls from "tls";
 
 // Read API key and workstation ID from environment variables
 const AGENTSTATION_API_KEY = process.env.AGENTSTATION_API_KEY;
@@ -11,6 +14,13 @@ const RESTART_DELAY_MS = parseInt(process.env.RESTART_DELAY_MS || "1000", 10);
 
 // Add a flag to track the first connection at the module level
 let isFirstConnection = true;
+
+// Track if we're currently speaking
+let isSpeaking = false;
+
+// Add the long text as a constant at the module level for easy access
+const LONG_TEXT =
+  "The chat bot joined the meeting and greeted everyone warmly. She listened carefully to the discussion, noting key points and observing the flow of conversation. When her name was mentioned, she responded promptly with insightful input, ensuring her answers were clear and relevant. As the meeting progressed, she detected a moment of silence and took the opportunity to summarize key takeaways. Before leaving, she thanked everyone for their time and assured them she was always available for assistance.";
 
 // Validate required AGENTSTATION_API_KEY environment variable
 if (!AGENTSTATION_API_KEY) {
@@ -32,9 +42,438 @@ console.log(
     : "undefined"
 );
 
-// Simple placeholder function to 'speak' a message
+/**
+ * RST Interrupt Utility - A collection of methods for sending RST packets to interrupt TCP connections
+ */
+class RSTInterruptUtility {
+  /**
+   * Create a new socket and send an RST packet to the specified host and port
+   * @param {Object} options Configuration options
+   * @param {string} options.host Target host
+   * @param {number} options.port Target port
+   * @param {string} options.path Request path
+   * @param {Object} options.headers HTTP headers to include
+   * @param {string} options.method HTTP method
+   * @param {string} options.body Request body
+   * @param {boolean} options.useTLS Whether to use TLS/SSL
+   * @param {Function} options.onSuccess Callback when RST is sent successfully
+   * @param {Function} options.onError Callback when an error occurs
+   * @returns {boolean} Whether the interrupt was initiated
+   */
+  static sendRSTPacket({
+    host = "api.agentstation.ai",
+    port = 443,
+    path = "/",
+    headers = {},
+    method = "POST",
+    body = "{}",
+    useTLS = true,
+    onSuccess = null,
+    onError = null,
+  } = {}) {
+    // Simplified logging - just a single log when starting
+    const isVerboseLogging = process.env.VERBOSE_LOGGING === "true";
+
+    try {
+      // Create a new TCP socket for each request (no reuse)
+      const socket = new net.Socket();
+
+      // Set up error handling
+      socket.on("error", (err) => {
+        if (isVerboseLogging) {
+          console.log(`RST socket error (expected): ${err.message}`);
+        }
+        if (onError) onError(err);
+      });
+
+      // Connect to the server
+      socket.connect(port, host, () => {
+        if (isVerboseLogging) {
+          console.log(`RST interrupt: Connected to ${host}:${port}`);
+        }
+
+        // If TLS is requested, upgrade the connection
+        if (useTLS) {
+          const tlsOptions = {
+            socket: socket,
+            servername: host,
+            rejectUnauthorized: true,
+          };
+
+          const tlsSocket = tls.connect(tlsOptions, () => {
+            if (isVerboseLogging) {
+              console.log(
+                "RST interrupt: TLS connection established, sending request..."
+              );
+            }
+
+            // Prepare headers
+            const headerLines = Object.entries(headers)
+              .map(([key, value]) => `${key}: ${value}`)
+              .join("\r\n");
+
+            // Format the request
+            const request =
+              `${method} ${path} HTTP/1.1\r\n` +
+              `Host: ${host}\r\n` +
+              headerLines +
+              (headerLines ? "\r\n" : "") +
+              `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n` +
+              body;
+
+            tlsSocket.write(request, () => {
+              if (isVerboseLogging) {
+                console.log(
+                  "RST interrupt: Request sent, executing resetAndDestroy..."
+                );
+              }
+
+              // Increase the delay to ensure the request is fully processed
+              setTimeout(() => {
+                try {
+                  // Always use resetAndDestroy on the raw TCP socket
+                  if (typeof socket.resetAndDestroy === "function") {
+                    // Only log in verbose mode
+                    if (isVerboseLogging) {
+                      console.log("Executing resetAndDestroy() on socket");
+                    }
+
+                    // Try to force socket to flush data before destroying
+                    socket.setNoDelay(true);
+
+                    // Call resetAndDestroy and capture result
+                    const result = socket.resetAndDestroy();
+
+                    if (isVerboseLogging) {
+                      console.log(
+                        `resetAndDestroy() called, result: ${
+                          result !== undefined ? result : "undefined"
+                        }`
+                      );
+                    }
+
+                    if (onSuccess) onSuccess();
+                  } else {
+                    if (isVerboseLogging) {
+                      console.log(
+                        "RST interrupt: resetAndDestroy() not available, using alternative..."
+                      );
+                    }
+                    socket.destroy(new Error("Force close"));
+                    if (onSuccess) onSuccess();
+                  }
+                } catch (err) {
+                  console.error(`RST interrupt failed: ${err.message}`);
+                  if (onError) onError(err);
+                }
+              }, 100); // Increased to 100ms from 10ms to ensure request is fully sent
+            });
+          });
+
+          tlsSocket.on("error", (err) => {
+            if (isVerboseLogging) {
+              console.log(
+                `TLS socket error (expected after RST): ${err.message}`
+              );
+            }
+          });
+        }
+        // For non-TLS connections, send the request directly
+        else {
+          // Prepare headers
+          const headerLines = Object.entries(headers)
+            .map(([key, value]) => `${key}: ${value}`)
+            .join("\r\n");
+
+          // Format the request
+          const request =
+            `${method} ${path} HTTP/1.1\r\n` +
+            `Host: ${host}\r\n` +
+            headerLines +
+            (headerLines ? "\r\n" : "") +
+            `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n` +
+            body;
+
+          socket.write(request, () => {
+            if (isVerboseLogging) {
+              console.log(
+                "RST interrupt: Request sent, executing resetAndDestroy..."
+              );
+            }
+
+            // Increased delay for non-TLS case as well
+            setTimeout(() => {
+              try {
+                if (typeof socket.resetAndDestroy === "function") {
+                  // Only log in verbose mode
+                  if (isVerboseLogging) {
+                    console.log("Executing resetAndDestroy() on socket");
+                  }
+
+                  // Try to force socket to flush data before destroying
+                  socket.setNoDelay(true);
+
+                  // Call resetAndDestroy and capture result
+                  const result = socket.resetAndDestroy();
+
+                  if (isVerboseLogging) {
+                    console.log(
+                      `resetAndDestroy() called, result: ${
+                        result !== undefined ? result : "undefined"
+                      }`
+                    );
+                  }
+
+                  if (onSuccess) onSuccess();
+                } else {
+                  if (isVerboseLogging) {
+                    console.log(
+                      "RST interrupt: resetAndDestroy() not available, using alternative..."
+                    );
+                  }
+                  socket.destroy(new Error("Force close"));
+                  if (onSuccess) onSuccess();
+                }
+              } catch (err) {
+                console.error(`RST interrupt failed: ${err.message}`);
+                if (onError) onError(err);
+              }
+            }, 100); // Increased to 100ms from 10ms to ensure request is fully sent
+          });
+        }
+      });
+
+      return true;
+    } catch (error) {
+      console.error(`Error initiating RST interrupt: ${error.message}`);
+      if (onError) onError(error);
+      return false;
+    }
+  }
+
+  /**
+   * Interrupt a speech stream on the Agent Station API
+   * @param {string} workstationId The workstation ID
+   * @param {string} apiKey The API key for authentication
+   * @returns {boolean} Whether the interruption was initiated
+   */
+  static interruptSpeech(workstationId, apiKey) {
+    // Make fewer attempts but with better timing
+    const attemptCount = 2; // Reduce to 2 attempts to minimize noise
+    let success = false;
+    const isVerboseLogging = process.env.VERBOSE_LOGGING === "true";
+
+    // Send first RST packet immediately
+    success = this.sendRSTPacket({
+      host: "api.agentstation.ai",
+      port: 443,
+      path: `/v1/workstations/${workstationId}/audio/speak`,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Connection: "close", // Add connection close header
+      },
+      method: "POST",
+      body: '{"text":"interrupt"}',
+      useTLS: true,
+      onSuccess: () => {
+        console.log("🤖 Speech interrupted successfully via RST");
+        // Reset state after successful interrupt
+        isSpeaking = false;
+      },
+      onError: (err) => {
+        console.error("🤖 RST interrupt failed, but continuing: ", err.message);
+        // Reset state even after failure to allow retrying
+        isSpeaking = false;
+      },
+    });
+
+    // Send additional attempt with longer delay
+    if (attemptCount > 1) {
+      setTimeout(() => {
+        if (isVerboseLogging) {
+          console.log("Sending backup RST packet...");
+        }
+
+        this.sendRSTPacket({
+          host: "api.agentstation.ai",
+          port: 443,
+          path: `/v1/workstations/${workstationId}/audio/speak`,
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            Connection: "close", // Add connection close header
+          },
+          method: "POST",
+          body: '{"text":"interrupt"}',
+          useTLS: true,
+          // Don't log success for backup attempts to avoid confusion
+          onSuccess: () => {
+            if (isVerboseLogging) {
+              console.log("Backup RST packet sent successfully");
+            }
+            isSpeaking = false;
+          },
+          onError: (err) => {
+            if (isVerboseLogging) {
+              console.log("Backup RST packet failed: " + err.message);
+            }
+            isSpeaking = false;
+          },
+        });
+      }, 200); // Increased delay to 200ms for better separation
+    }
+
+    return success;
+  }
+}
+
+// Function to interrupt the current speech
+function interruptSpeech() {
+  // Reset the speaking state immediately to allow for multiple interrupts
+  const wasSpeaking = isSpeaking;
+  isSpeaking = false;
+
+  if (wasSpeaking) {
+    console.log("🤖 Interrupting speech with RST...");
+
+    // We don't need to store the return value anymore since we already reset the state
+    RSTInterruptUtility.interruptSpeech(WORKSTATION_ID, AGENTSTATION_API_KEY);
+
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Makes an HTTP request with the option to interrupt it with RST packets
+ * @param {Object} options Request options
+ * @param {boolean} options.enableRSTInterruption Whether this request can be interrupted with RST
+ * @returns {Promise} A promise that resolves with the response
+ */
+function makeInterruptibleRequest(options) {
+  const {
+    protocol = "https:",
+    hostname,
+    port = protocol === "https:" ? 443 : 80,
+    path,
+    method = "GET",
+    headers = {},
+    body = null,
+    enableRSTInterruption = false,
+    onInterrupt = null,
+  } = options;
+
+  return new Promise((resolve, reject) => {
+    const requestModule = protocol === "https:" ? https : require("http");
+
+    const requestOptions = {
+      hostname,
+      port,
+      path,
+      method,
+      headers,
+    };
+
+    const req = requestModule.request(requestOptions, (res) => {
+      let data = "";
+
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
+
+      res.on("end", () => {
+        resolve({
+          statusCode: res.statusCode,
+          headers: res.headers,
+          data,
+        });
+      });
+    });
+
+    req.on("error", (error) => {
+      // Don't treat ECONNRESET as an error if we're enabling RST interruption
+      if (
+        enableRSTInterruption &&
+        (error.code === "ECONNRESET" ||
+          error.message.includes("Socket forcibly closed"))
+      ) {
+        if (onInterrupt) onInterrupt();
+        resolve({ interrupted: true });
+      } else {
+        reject(error);
+      }
+    });
+
+    // Send the body if provided
+    if (body) {
+      req.write(typeof body === "string" ? body : JSON.stringify(body));
+    }
+
+    req.end();
+  });
+}
+
+// Function to speak text via the Agent Station API
+async function speakText(text, workstationId, languageCode = "en-US") {
+  // Interrupt any ongoing speech - but don't wait, to avoid timing issues
+  if (isSpeaking) {
+    interruptSpeech();
+  }
+
+  // Reset state before starting new speech
+  isSpeaking = true;
+
+  console.log(
+    `🤖 🔊 Speaking: "${text.substring(0, 50)}${text.length > 50 ? "..." : ""}"`
+  );
+
+  try {
+    const response = await makeInterruptibleRequest({
+      protocol: "https:",
+      hostname: "api.agentstation.ai",
+      path: `/v1/workstations/${workstationId}/audio/speak`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${AGENTSTATION_API_KEY}`,
+      },
+      body: {
+        text: text,
+        language_code: languageCode,
+      },
+      enableRSTInterruption: true,
+      onInterrupt: () => {
+        console.log("🤖 Speech was interrupted intentionally");
+        isSpeaking = false;
+      },
+    });
+
+    if (response.interrupted) {
+      console.log("🤖 Speech was interrupted");
+    } else {
+      console.log(`🔗 Speech request status: ${response.statusCode}`);
+      console.log("🤖 🔊 Speech completed");
+    }
+
+    // Ensure state is reset
+    isSpeaking = false;
+    return response;
+  } catch (error) {
+    console.error("Error in speech request:", error.message);
+    // Ensure state is reset even in case of errors
+    isSpeaking = false;
+    throw error;
+  }
+}
+
+// Update the placeholder speak function to use the new speakText function
 function speak(message) {
+  // Still log the message
   console.log(message);
+  // Now actually speak it
+  return speakText(message, WORKSTATION_ID);
 }
 
 // Function to listen for the keyword
@@ -178,7 +617,7 @@ function listenForKeyword(workstationId, reconnectAttempt = 0) {
       // Reset keyword detected flag - we'll set it again if needed
       keywordDetected = false;
 
-      // If the transcript contains the keyword, highlight it and speak a message
+      // If the transcript contains the keyword, highlight it and take action based on current state
       if (transcript && new RegExp(`\\b${KEYWORD}\\b`, "i").test(transcript)) {
         // Highlight the keyword in the console output with asterisks
         const highlightedTranscript = transcript.replace(
@@ -200,7 +639,43 @@ function listenForKeyword(workstationId, reconnectAttempt = 0) {
           `🚨 keyword '${KEYWORD}' heard: "${highlightedTranscript}" ${confidenceIndicator}\n`
         );
 
-        speak("🤖 Hello! How can I assist you?");
+        // Check if we're currently speaking
+        console.log(
+          `Current speaking state: ${isSpeaking ? "SPEAKING" : "NOT SPEAKING"}`
+        );
+
+        if (isSpeaking) {
+          // If speaking, interrupt the speech but keep transcription running
+          console.log("🤖 Keyword detected during speech - interrupting");
+          interruptSpeech();
+          // Give a brief moment before allowing the next keyword detection
+          // This helps prevent immediate re-triggering
+          setTimeout(() => {
+            console.log("🤖 Now ready to detect keywords again");
+          }, 500);
+        } else {
+          // If not speaking, start speaking the long text
+          console.log("🤖 Keyword detected - starting speech");
+          speakText(LONG_TEXT, WORKSTATION_ID)
+            .then(() => {
+              console.log(
+                "🤖 Speech completed normally - ready for next keyword"
+              );
+            })
+            .catch((err) => {
+              // Only log non-interruption errors
+              if (
+                err.code !== "ECONNRESET" &&
+                err.message !== "Speech interrupted"
+              ) {
+                console.error("🤖 Error during speech:", err.message);
+              }
+              // Make sure we're ready for the next cycle
+              console.log(
+                "🤖 Speech ended (interrupted or error) - ready for next keyword"
+              );
+            });
+        }
 
         // Set the flag to indicate keyword was detected
         keywordDetected = true;
@@ -211,7 +686,8 @@ function listenForKeyword(workstationId, reconnectAttempt = 0) {
         consecutiveKeywordDetection = false;
       }
     } catch (error) {
-      console.error("Error processing final transcript:", error);
+      console.error("Error processing final transcript:", error.message);
+      console.error(error.stack); // Add stack trace for better debugging
     }
   });
 
@@ -303,3 +779,36 @@ function listenForKeyword(workstationId, reconnectAttempt = 0) {
 
 // Start listening for the keyword
 listenForKeyword(WORKSTATION_ID);
+
+// Keep the keyboard shortcut for manual speech interruption
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdin.on("data", (key) => {
+  // Ctrl+C exits the program
+  if (key.toString() === "\u0003") {
+    process.exit();
+  }
+
+  // Spacebar interrupts speech
+  if (key.toString() === " ") {
+    if (interruptSpeech()) {
+      console.log("Speech interrupted by user");
+    } else {
+      console.log("No active speech to interrupt");
+    }
+  }
+
+  // 's' key starts speaking the long text (for testing)
+  if (key.toString().toLowerCase() === "s") {
+    console.log("🤖 Starting to speak long text (triggered by 's' key)");
+    speakText(LONG_TEXT, WORKSTATION_ID).catch((err) => {
+      // Only log non-interruption errors
+      if (err.code !== "ECONNRESET") {
+        console.error("🤖 Error during speech:", err.message);
+      }
+    });
+  }
+});
+console.log(
+  "Press SPACE to interrupt speech, 'S' to start speaking, Ctrl+C to exit"
+);
