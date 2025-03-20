@@ -29,6 +29,10 @@ let activeSpeechSocket = null; // Track the active socket used for speech reques
 const LONG_TEXT =
   "The chat bot joined the meeting and greeted everyone warmly. She listened carefully to the discussion, noting key points and observing the flow of conversation. When her name was mentioned, she responded promptly with insightful input, ensuring her answers were clear and relevant. As the meeting progressed, she detected a moment of silence and took the opportunity to summarize key takeaways. Before leaving, she thanked everyone for their time and assured them she was always available for assistance.";
 
+// Add this flag at the module level near other state variables
+let lastInterruptTime = 0;
+const INTERRUPT_DEBOUNCE_MS = 1500; // 1.5 second debounce for interruptions
+
 // Validate required AGENTSTATION_API_KEY environment variable
 if (!AGENTSTATION_API_KEY) {
   console.error("Error: AGENTSTATION_API_KEY environment variable is required");
@@ -535,6 +539,27 @@ function listenForKeyword(workstationId, reconnectAttempt = 0) {
       }
       // Overwrite the same line, clearing any previous output
       process.stdout.write(`\r\x1b[K💬 ${transcript}...`);
+
+      // Check for keyword in partial transcript, but ONLY if currently speaking
+      // AND if we haven't interrupted recently (debounce)
+      const now = Date.now();
+      if (
+        isSpeaking &&
+        transcript &&
+        new RegExp(`\\b${KEYWORD}\\b`, "i").test(transcript) &&
+        now - lastInterruptTime > INTERRUPT_DEBOUNCE_MS
+      ) {
+        console.log(
+          "\n🚨 Keyword detected in partial transcript while speaking - interrupting"
+        );
+        interruptSpeech();
+        // Update the last interrupt time for debouncing
+        lastInterruptTime = now;
+        // Add a "keyword detected" message to make it clear why interruption occurred
+        process.stdout.write(
+          "\r\x1b[K🔇 Speech interrupted by keyword detection in partial transcript\n"
+        );
+      }
     } catch (error) {
       console.error("Error processing partial transcript:", error);
     }
@@ -628,16 +653,18 @@ function listenForKeyword(workstationId, reconnectAttempt = 0) {
           `Current speaking state: ${isSpeaking ? "SPEAKING" : "NOT SPEAKING"}`
         );
 
-        if (isSpeaking) {
+        const now = Date.now();
+        if (isSpeaking && now - lastInterruptTime > INTERRUPT_DEBOUNCE_MS) {
           // If speaking, interrupt the speech but keep transcription running
           console.log("🤖 Keyword detected during speech - interrupting");
           interruptSpeech();
-          // Give a brief moment before allowing the next keyword detection
-          // This helps prevent immediate re-triggering
+          // Update the last interrupt time for debouncing
+          lastInterruptTime = now;
+          // The existing timeout just updates the ready message but doesn't affect state
           setTimeout(() => {
             console.log("🤖 Now ready to detect keywords again");
           }, 500);
-        } else {
+        } else if (!isSpeaking) {
           // If not speaking, start speaking the long text
           console.log("🤖 Keyword detected - starting speech");
           speakText(LONG_TEXT, WORKSTATION_ID)
@@ -775,7 +802,11 @@ process.stdin.on("data", (key) => {
 
   // Spacebar interrupts speech
   if (key.toString() === " ") {
+    const now = Date.now();
+    // Always allow manual interruption regardless of debounce
+    // but still update the last interrupt time
     if (interruptSpeech()) {
+      lastInterruptTime = now;
       console.log("Speech interrupted by user");
     } else {
       console.log("No active speech to interrupt");
